@@ -1,0 +1,6 @@
+services:
+  cellmate:
+    build: /home/eric/projects/cellmate
+    container_name: cellmate
+    network_mode: host
+    restart: unless-stopped

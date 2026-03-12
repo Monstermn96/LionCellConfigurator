@@ -1,0 +1,7 @@
+services:
+  cellmate:
+    build: .
+    container_name: cellmate
+    ports:
+      - "3085:3085"
+    restart: unless-stopped

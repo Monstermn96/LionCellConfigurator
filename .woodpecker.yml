@@ -1,0 +1,22 @@
+when:
+  - event: push
+    branch: master
+
+steps:
+  - name: sync-latest
+    image: alpine:latest
+    commands:
+      - apk add --no-cache rsync
+      - rsync -a --delete --exclude='.git' ./ /home/eric/projects/cellmate/
+
+  - name: deploy
+    image: docker:cli
+    commands:
+      - docker compose -f /home/eric/services/webapps/cellmate/docker-compose.yml down 2>/dev/null || true
+      - docker compose -f /home/eric/services/webapps/cellmate/docker-compose.yml up --build --force-recreate -d
+
+  - name: health-check
+    image: docker:cli
+    commands:
+      - sleep 5
+      - docker inspect --format='{{.State.Status}}' cellmate | grep -q running && echo "Health check passed - container is running" || (echo "Health check FAILED" && exit 1)
