@@ -1,3 +1,9 @@
+# Dependencies
+node_modules/
+
+# Build
+dist/
+
 # OS
 .DS_Store
 Thumbs.db
@@ -15,3 +21,8 @@ desktop.ini
 
 # Docker
 .playwright-cli/
+
+# Env
+.env
+.env.local
+.env.*.local
