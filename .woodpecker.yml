@@ -2,7 +2,34 @@ when:
   - event: push
     branch: master
 
+labels:
+  hostname: macbook
+
 steps:
+  - name: cleanup-old-hosts
+    image: alpine:latest
+    commands:
+      - apk add --no-cache openssh-client
+      - mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo "StrictHostKeyChecking no" > ~/.ssh/config
+      - |
+        THIS_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "unknown")
+        echo "Deploy target IP: $THIS_IP"
+        SERVERS_FILE="/home/eric/services/fleet/servers.yml"
+        if [ ! -f "$SERVERS_FILE" ]; then
+          echo "Warning: servers.yml not found, skipping cleanup"
+          exit 0
+        fi
+
+        # Parse all server user@ip pairs from servers.yml
+        awk '/^  - name:/{name=$NF} /ip:/{ip=$NF} /user:/{user=$NF; print user, ip}' "$SERVERS_FILE" | while read user ip; do
+          if [ "$ip" = "$THIS_IP" ]; then
+            echo "Skipping $ip (deploy target)"
+            continue
+          fi
+          echo "Cleaning up cellmate on $user@$ip..."
+          ssh "$user@$ip" "docker stop cellmate 2>/dev/null && docker rm cellmate 2>/dev/null && echo '  Removed cellmate' || echo '  Not running'" || echo "  Could not reach $ip"
+        done
+
   - name: sync-latest
     image: alpine:latest
     commands:
