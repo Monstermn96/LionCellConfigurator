@@ -3,7 +3,7 @@ when:
     branch: master
 
 labels:
-  hostname: macbook
+  hostname: primary
 
 steps:
   - name: cleanup-old-hosts
@@ -12,23 +12,28 @@ steps:
       - apk add --no-cache openssh-client
       - mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo "StrictHostKeyChecking no" > ~/.ssh/config
       - |
-        THIS_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "unknown")
-        echo "Deploy target IP: $THIS_IP"
+        DEPLOY_IP="192.168.1.32"
+        DEPLOY_USER="eric"
+
+        # Parse servers.yml for all fleet server IPs and clean up on non-target servers
         SERVERS_FILE="/home/eric/services/fleet/servers.yml"
         if [ ! -f "$SERVERS_FILE" ]; then
           echo "Warning: servers.yml not found, skipping cleanup"
           exit 0
         fi
 
-        # Parse all server user@ip pairs from servers.yml
-        awk '/^  - name:/{name=$NF} /ip:/{ip=$NF} /user:/{user=$NF; print user, ip}' "$SERVERS_FILE" | while read user ip; do
-          if [ "$ip" = "$THIS_IP" ]; then
+        awk '/^\s*ip:/{ip=$NF} /^\s*user:/{user=$NF; print user, ip}' "$SERVERS_FILE" | while read user ip; do
+          if [ "$ip" = "$DEPLOY_IP" ]; then
             echo "Skipping $ip (deploy target)"
             continue
           fi
           echo "Cleaning up cellmate on $user@$ip..."
-          ssh "$user@$ip" "docker stop cellmate 2>/dev/null && docker rm cellmate 2>/dev/null && echo '  Removed cellmate' || echo '  Not running'" || echo "  Could not reach $ip"
+          docker stop cellmate 2>/dev/null && docker rm cellmate 2>/dev/null && echo "  Removed cellmate locally" || echo "  Not running locally"
         done
+
+        # Also clean up on the remote deploy target in case of stale container
+        echo "Preparing deploy target $DEPLOY_USER@$DEPLOY_IP..."
+        ssh "$DEPLOY_USER@$DEPLOY_IP" "docker stop cellmate 2>/dev/null && docker rm cellmate 2>/dev/null && echo '  Cleaned old cellmate' || echo '  No old cellmate'" || echo "  Could not reach $DEPLOY_IP"
 
   - name: sync-latest
     image: alpine:latest
@@ -36,14 +41,46 @@ steps:
       - apk add --no-cache rsync
       - rsync -a --delete --exclude='.git' ./ /home/eric/projects/cellmate/
 
-  - name: deploy
+  - name: build-and-transfer
     image: docker:cli
     commands:
-      - docker compose -f /home/eric/services/webapps/cellmate/docker-compose.yml down 2>/dev/null || true
-      - docker compose -f /home/eric/services/webapps/cellmate/docker-compose.yml up --build --force-recreate -d
+      - apk add --no-cache openssh-client
+      - mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo "StrictHostKeyChecking no" > ~/.ssh/config
+      - docker build -t cellmate /home/eric/projects/cellmate
+      - docker save cellmate | gzip > /tmp/cellmate.tar.gz
+      - echo "Image built, transferring to macbook..."
+      - scp /tmp/cellmate.tar.gz eric@192.168.1.32:/tmp/cellmate.tar.gz
+      - ssh eric@192.168.1.32 "docker load < /tmp/cellmate.tar.gz && rm /tmp/cellmate.tar.gz"
+      - rm /tmp/cellmate.tar.gz
+      - echo "Image transferred and loaded on macbook"
+
+  - name: deploy
+    image: alpine:latest
+    commands:
+      - apk add --no-cache openssh-client
+      - mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo "StrictHostKeyChecking no" > ~/.ssh/config
+      - |
+        ssh eric@192.168.1.32 bash <<'DEPLOY'
+        cd ~/services/webapps/cellmate
+
+        # Update compose to use pre-built image instead of build
+        cat > docker-compose.yml <<'COMPOSE'
+        services:
+          cellmate:
+            image: cellmate:latest
+            container_name: cellmate
+            network_mode: host
+            restart: unless-stopped
+        COMPOSE
+
+        docker compose up -d
+        DEPLOY
 
   - name: health-check
-    image: docker:cli
+    image: alpine:latest
     commands:
+      - apk add --no-cache openssh-client
+      - mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo "StrictHostKeyChecking no" > ~/.ssh/config
       - sleep 5
-      - docker inspect --format='{{.State.Status}}' cellmate | grep -q running && echo "Health check passed - container is running" || (echo "Health check FAILED" && exit 1)
+      - ssh eric@192.168.1.32 "docker inspect --format='{{.State.Status}}' cellmate" | grep -q running && echo "Health check passed - cellmate is running on macbook" || (echo "Health check FAILED" && exit 1)
+
